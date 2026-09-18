@@ -16,6 +16,10 @@ class QuestionnaireScreen extends StatefulWidget {
   final String genero;
   final String posicion;
   final Uint8List? imagenBytes;
+  // Foto ya lista para usar (viene de Google o es el avatar genérico
+  // elegido en el ProfileScreen). Si viene seteada, no subimos nada a
+  // Storage: la usamos directo.
+  final String? avatarUrlDirecta;
 
   const QuestionnaireScreen({
     super.key,
@@ -27,6 +31,7 @@ class QuestionnaireScreen extends StatefulWidget {
     required this.genero,
     required this.posicion,
     this.imagenBytes,
+    this.avatarUrlDirecta,
   });
 
   @override
@@ -63,11 +68,15 @@ class _QuestionnaireScreenState extends State<QuestionnaireScreen> {
     String semilla = nombreFinal.replaceAll(' ', ''); 
     String urlAvatarIA = 'https://api.dicebear.com/9.x/micah/png?seed=$semilla&backgroundColor=transparent';
 
-    final String tempUid = FirebaseAuth.instance.currentUser!.uid; 
-    String urlAvatarFinal = urlAvatarIA; 
+    final String tempUid = FirebaseAuth.instance.currentUser!.uid;
+    String urlAvatarFinal = urlAvatarIA;
 
-    // --- 👇 SUBIDA REAL A FIREBASE STORAGE 👇 ---
-    if (widget.imagenBytes != null) {
+    if (widget.avatarUrlDirecta != null && widget.avatarUrlDirecta!.isNotEmpty) {
+      // El usuario eligió 'Foto de Google' o 'Avatar genérico' en el paso
+      // anterior: ya es una URL válida, no hace falta tocar Storage.
+      urlAvatarFinal = widget.avatarUrlDirecta!;
+    } else if (widget.imagenBytes != null) {
+      // --- 👇 SUBIDA REAL A FIREBASE STORAGE (solo si eligió 'Subir foto') 👇 ---
       try {
         final storageRef = FirebaseStorage.instance
             .ref()
@@ -78,12 +87,12 @@ class _QuestionnaireScreenState extends State<QuestionnaireScreen> {
         TaskSnapshot storageSnapshot = await uploadTask;
 
         urlAvatarFinal = await storageSnapshot.ref.getDownloadURL();
-        print("✅ Foto de perfil subida a Firebase Storage con éxito: $urlAvatarFinal");
       } catch (e) {
-        print("❌ Error al subir foto a Storage (usando fallback de IA): $e");
+        // Fallback silencioso al avatar genérico si falla la subida.
+        urlAvatarFinal = urlAvatarIA;
       }
+      // --- 👆 FIN SUBIDA A STORAGE 👆 ---
     }
-    // --- 👆 FIN SUBIDA A STORAGE 👆 ---
 
     // 2. Cálculo de Stats
     final rango = _rangos[widget.categoria] ?? [50, 59];
@@ -123,10 +132,14 @@ class _QuestionnaireScreenState extends State<QuestionnaireScreen> {
           .doc(tempUid)
           .set(datosParaFirestore);
 
-      print("✅ Jugador guardado con éxito en Firebase");
-
     } catch (e) {
-      print("❌ Error al guardar en base de datos: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No pudimos guardar tu perfil: $e'), backgroundColor: Colors.redAccent),
+        );
+      }
+      setState(() => _isGeneratingAI = false);
+      return;
     }
 
     setState(() => _isGeneratingAI = false);

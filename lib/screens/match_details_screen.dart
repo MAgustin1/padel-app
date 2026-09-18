@@ -171,6 +171,9 @@ class _MatchDetailsScreenState extends State<MatchDetailsScreen> {
           final String horaStr = "${fecha.hour.toString().padLeft(2, '0')}:${fecha.minute.toString().padLeft(2, '0')}hs";
           final String fechaStr = "${fecha.day}/${fecha.month}/${fecha.year}";
 
+          final List votaron = datos['votaron'] as List? ?? [];
+          final bool yaVote = votaron.contains(miUid);
+
           final String genero = datos['generoReq'] ?? 'Mixto (Todos)';
           final String edad = datos['rangoEdadReq'] ?? 'Cualquier edad';
           final String tipo = datos['tipoPartido'] ?? 'Competitivo (Suma Puntos)';
@@ -480,36 +483,53 @@ class _MatchDetailsScreenState extends State<MatchDetailsScreen> {
                                 ),
                 ],
 
-                // CASO D: EL PARTIDO ESTÁ FINALIZADO -> ¡A VOTAR!
+                // CASO D: EL PARTIDO ESTÁ FINALIZADO -> ¡A VOTAR! (si no votaste ya)
                 if (estado == 'finalizado') ...[
-                  Container(
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(15),
-                      boxShadow: [
-                        BoxShadow(color: const Color(0xFFDFFF00).withOpacity(0.25), blurRadius: 20, spreadRadius: 2)
-                      ]
-                    ),
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                         Navigator.push(context, MaterialPageRoute(
-                          builder: (context) => MatchVotingScreen(
-                            matchId: widget.matchId,
-                            jugadoresActuales: jugadoresActuales
-                          ),
-                        ));
-                      },
-                      icon: const Icon(Icons.star, color: Colors.black, size: 24),
-                      label: const Text('EVALUAR JUGADORES', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFDFFF00), 
-                        foregroundColor: Colors.black, 
-                        padding: const EdgeInsets.symmetric(vertical: 20), 
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                        elevation: 0
+                  if (yaVote)
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E293B),
+                        borderRadius: BorderRadius.circular(15),
+                        border: Border.all(color: Colors.white12)
+                      ),
+                      child: const Center(
+                        child: Text(
+                          '✅ Ya calificaste a los jugadores de este partido.',
+                          style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic, fontSize: 14),
+                          textAlign: TextAlign.center,
+                        )
+                      ),
+                    )
+                  else
+                    Container(
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(15),
+                        boxShadow: [
+                          BoxShadow(color: const Color(0xFFDFFF00).withOpacity(0.25), blurRadius: 20, spreadRadius: 2)
+                        ]
+                      ),
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                           Navigator.push(context, MaterialPageRoute(
+                            builder: (context) => MatchVotingScreen(
+                              matchId: widget.matchId,
+                              jugadoresActuales: jugadoresActuales
+                            ),
+                          ));
+                        },
+                        icon: const Icon(Icons.star, color: Colors.black, size: 24),
+                        label: const Text('EVALUAR JUGADORES', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFDFFF00),
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                          elevation: 0
+                        ),
                       ),
                     ),
-                  ),
                 ]
               ],
             ),
@@ -535,43 +555,64 @@ class _MatchDetailsScreenState extends State<MatchDetailsScreen> {
     );
   }
 
-  // 👇 NUEVA FUNCIÓN: ANOTARSE AL PARTIDO CONTROLANDO CUPOS MIXTOS 👇
+  // 👇 ANOTARSE AL PARTIDO, CONTROLANDO CUPOS MIXTOS Y GÉNERO REQUERIDO
+  // Va todo dentro de una transacción: lee el partido y escribe en la misma
+  // operación atómica, así dos jugadores tocando "Anotarme" al mismo tiempo
+  // no pueden pasar los dos la validación con datos ya desactualizados
+  // (evita terminar con 5 jugadores o cupos por género en negativo).
   Future<void> _anotarseAlPartido(String miGenero) async {
     setState(() => _estaProcesando = true);
+    final partidoRef = FirebaseFirestore.instance.collection('partidos').doc(widget.matchId);
+    String creadorId = '';
     try {
       final String miUid = FirebaseAuth.instance.currentUser!.uid;
 
-      final docPartido = await FirebaseFirestore.instance.collection('partidos').doc(widget.matchId).get();
-      final datos = docPartido.data() as Map<String, dynamic>;
-      final String generoReq = datos['generoReq'] ?? 'Mixto (Todos)';
-      final String creadorId = datos['creadorId'] ?? '';
+      final String? error = await FirebaseFirestore.instance.runTransaction<String?>((transaction) async {
+        final snap = await transaction.get(partidoRef);
+        final datos = snap.data() ?? {};
+        final List jugadoresActuales = datos['jugadoresActuales'] as List? ?? [];
+        final String generoReq = datos['generoReq'] ?? 'Mixto (Todos)';
+        creadorId = datos['creadorId'] ?? '';
 
-      final Map<String, dynamic> actualizaciones = {
-        'jugadoresActuales': FieldValue.arrayUnion([miUid]),
-        'lugaresDisponibles': FieldValue.increment(-1),
-      };
+        if (jugadoresActuales.contains(miUid)) return 'YA_ANOTADO';
+        if (jugadoresActuales.length >= 4) return 'SIN_CUPO';
+        if (generoReq == 'Masculino' && miGenero != 'masculino') return 'GENERO_NO_COINCIDE';
+        if (generoReq == 'Femenino' && miGenero != 'femenino') return 'GENERO_NO_COINCIDE';
 
-      if (generoReq == 'Mixto (Todos)') {
-        if (miGenero == 'masculino') {
-          int actuales = datos['cuposMasculinos'] ?? 0;
-          if (actuales <= 0) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ya no quedan cupos para hombres en este partido mixto.'), backgroundColor: Colors.redAccent));
-            setState(() => _estaProcesando = false);
-            return;
+        final Map<String, dynamic> actualizaciones = {
+          'jugadoresActuales': FieldValue.arrayUnion([miUid]),
+          'lugaresDisponibles': FieldValue.increment(-1),
+        };
+
+        if (generoReq == 'Mixto (Todos)') {
+          if (miGenero == 'masculino') {
+            final int actuales = datos['cuposMasculinos'] ?? 0;
+            if (actuales <= 0) return 'SIN_CUPO_MASCULINO';
+            actualizaciones['cuposMasculinos'] = FieldValue.increment(-1);
+          } else if (miGenero == 'femenino') {
+            final int actuales = datos['cuposFemeninos'] ?? 0;
+            if (actuales <= 0) return 'SIN_CUPO_FEMENINO';
+            actualizaciones['cuposFemeninos'] = FieldValue.increment(-1);
           }
-          actualizaciones['cuposMasculinos'] = FieldValue.increment(-1);
-        } else if (miGenero == 'femenino') {
-          int actuales = datos['cuposFemeninos'] ?? 0;
-          if (actuales <= 0) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ya no quedan cupos para mujeres en este partido mixto.'), backgroundColor: Colors.redAccent));
-            setState(() => _estaProcesando = false);
-            return;
-          }
-          actualizaciones['cuposFemeninos'] = FieldValue.increment(-1);
         }
-      }
 
-      await FirebaseFirestore.instance.collection('partidos').doc(widget.matchId).update(actualizaciones);
+        transaction.update(partidoRef, actualizaciones);
+        return null;
+      });
+
+      if (error != null) {
+        if (!mounted) return;
+        const mensajes = {
+          'YA_ANOTADO': 'Ya estás anotado en este partido.',
+          'SIN_CUPO': 'El partido ya se llenó justo ahora.',
+          'SIN_CUPO_MASCULINO': 'Ya no quedan cupos para hombres en este partido mixto.',
+          'SIN_CUPO_FEMENINO': 'Ya no quedan cupos para mujeres en este partido mixto.',
+          'GENERO_NO_COINCIDE': 'Este partido es solo para el otro género.',
+        };
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(mensajes[error] ?? 'No te pudiste anotar.'), backgroundColor: Colors.redAccent));
+        setState(() => _estaProcesando = false);
+        return;
+      }
 
       // Gatillo: Avisarle al creador
       if (creadorId.isNotEmpty && creadorId != miUid) {
@@ -582,7 +623,8 @@ class _MatchDetailsScreenState extends State<MatchDetailsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('¡Te anotaste al partido con éxito! 🎾'), backgroundColor: Color(0xFFDFFF00)));
       setState(() => _estaProcesando = false);
     } catch (e) {
-      print("Error al anotarse: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No te pudiste anotar: $e'), backgroundColor: Colors.redAccent));
       setState(() => _estaProcesando = false);
     }
   }
@@ -636,8 +678,14 @@ class _MatchDetailsScreenState extends State<MatchDetailsScreen> {
     }
   }
 
+  // 👇 CONFIRMAR RESULTADO Y REPARTIR PUNTOS, ATÓMICO
+  // Va todo dentro de una transacción que primero relee el estado del
+  // partido: si los dos jugadores del equipo B tocan "Confirmar" casi al
+  // mismo tiempo, el segundo que llega ve que el estado ya no es
+  // "esperando_confirmacion" y aborta sin repartir puntos por segunda vez.
   Future<void> _confirmarResultadoYRepartirPuntos(Map<String, dynamic> datosPartido, String nombreClub) async {
     setState(() => _estaProcesando = true);
+    final partidoRef = FirebaseFirestore.instance.collection('partidos').doc(widget.matchId);
     try {
       final String resultado = datosPartido['resultadoPropuesto'];
       final List<dynamic> equipoA = datosPartido['equipoA'];
@@ -652,40 +700,57 @@ class _MatchDetailsScreenState extends State<MatchDetailsScreen> {
       else if (resultado == '1-2') { ptsA = 1; lossA = 1; ptsB = 2; winB = 1; }
       else if (resultado == '0-2') { ptsA = 0; lossA = 1; ptsB = 3; winB = 1; }
 
-      final batch = FirebaseFirestore.instance.batch();
+      final bool yaEstabaConfirmado = await FirebaseFirestore.instance.runTransaction<bool>((transaction) async {
+        final snap = await transaction.get(partidoRef);
+        final datosActuales = snap.data() ?? {};
+        final String estadoActual = datosActuales['estado']?.toString().toLowerCase() ?? '';
 
-      for (String uid in equipoA) {
-        batch.update(FirebaseFirestore.instance.collection('users').doc(uid), {
-          'puntosTotales': FieldValue.increment(ptsA),
-          'partidosGanados': FieldValue.increment(winA),
-          'partidosPerdidos': FieldValue.increment(lossA),
-        });
-        
-        await _enviarNotificacionCampanita(uid, '¡PUNTOS REPARTIDOS! 🏆', 'El partido en $nombreClub finalizó. Sumaste +$ptsA pts. ¡Entrá a calificar a los jugadores!', 'partido');
-      }
+        if (estadoActual != 'esperando_confirmacion') {
+          return true;
+        }
 
-      for (String uid in equipoB) {
-        batch.update(FirebaseFirestore.instance.collection('users').doc(uid), {
-          'puntosTotales': FieldValue.increment(ptsB),
-          'partidosGanados': FieldValue.increment(winB),
-          'partidosPerdidos': FieldValue.increment(lossB),
-        });
-        
-        await _enviarNotificacionCampanita(uid, '¡PUNTOS REPARTIDOS! 🏆', 'El partido en $nombreClub finalizó. Sumaste +$ptsB pts. ¡Entrá a calificar a los jugadores!', 'partido');
-      }
+        for (String uid in equipoA) {
+          transaction.update(FirebaseFirestore.instance.collection('users').doc(uid), {
+            'puntosTotales': FieldValue.increment(ptsA),
+            'partidosGanados': FieldValue.increment(winA),
+            'partidosPerdidos': FieldValue.increment(lossA),
+          });
+        }
+        for (String uid in equipoB) {
+          transaction.update(FirebaseFirestore.instance.collection('users').doc(uid), {
+            'puntosTotales': FieldValue.increment(ptsB),
+            'partidosGanados': FieldValue.increment(winB),
+            'partidosPerdidos': FieldValue.increment(lossB),
+          });
+        }
 
-      batch.update(FirebaseFirestore.instance.collection('partidos').doc(widget.matchId), {
-        'estado': 'finalizado',
+        transaction.update(partidoRef, {'estado': 'finalizado'});
+        return false;
       });
 
-      await batch.commit();
+      if (yaEstabaConfirmado) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tu compañero ya confirmó el resultado.'), backgroundColor: Colors.orangeAccent));
+        Navigator.pop(context);
+        return;
+      }
+
+      // Las notificaciones son avisos best-effort: van después de que el
+      // reparto de puntos ya quedó confirmado de forma atómica.
+      for (String uid in equipoA) {
+        await _enviarNotificacionCampanita(uid, '¡PUNTOS REPARTIDOS! 🏆', 'El partido en $nombreClub finalizó. Sumaste +$ptsA pts. ¡Entrá a calificar a los jugadores!', 'partido');
+      }
+      for (String uid in equipoB) {
+        await _enviarNotificacionCampanita(uid, '¡PUNTOS REPARTIDOS! 🏆', 'El partido en $nombreClub finalizó. Sumaste +$ptsB pts. ¡Entrá a calificar a los jugadores!', 'partido');
+      }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('¡Puntos repartidos con éxito!'), backgroundColor: Colors.green));
       Navigator.pop(context);
 
     } catch (e) {
-      print("Error al repartir puntos: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No pudimos repartir los puntos: $e'), backgroundColor: Colors.redAccent));
       setState(() => _estaProcesando = false);
     }
   }

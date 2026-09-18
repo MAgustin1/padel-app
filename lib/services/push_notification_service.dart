@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 class PushNotificationService {
   static final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;
+  static StreamSubscription<String>? _tokenRefreshSub;
 
   static Future<void> init() async {
     // 1. Pedimos permiso al usuario (Salta el cartelito de "Desea recibir notificaciones")
@@ -23,8 +25,12 @@ class PushNotificationService {
       // 3. Lo guardamos en el perfil del usuario en Firestore
       await _guardarToken(token);
       
-      // 4. Por si el token cambia en el futuro, lo actualizamos automáticamente
-      _firebaseMessaging.onTokenRefresh.listen(_guardarToken);
+      // 4. Por si el token cambia en el futuro, lo actualizamos automáticamente.
+      // 👇 Cancelamos cualquier suscripción anterior antes de crear una nueva:
+      // HomeScreen llama a init() de nuevo en cada logout/login dentro de la
+      // misma sesión de la app, y sin esto se iban acumulando listeners vivos.
+      await _tokenRefreshSub?.cancel();
+      _tokenRefreshSub = _firebaseMessaging.onTokenRefresh.listen(_guardarToken);
     } else {
       print('❌ Permiso denegado para notificaciones');
     }

@@ -78,10 +78,12 @@ class _MatchHistoryScreenState extends State<MatchHistoryScreen> {
             return const Center(child: Text('Todavía no jugaste ningún partido.', style: TextStyle(color: Colors.grey)));
           }
 
-          // Filtramos SOLO los finalizados y los ordenamos en Dart para evitar indexar en Firebase
+          // Filtramos SOLO los finalizados y los ordenamos en Dart para evitar indexar en Firebase.
+          // También descartamos los que no tengan 'fechaHora' como Timestamp válido: un solo doc
+          // con ese campo nulo/mal tipeado no debe tirar abajo el sort ni el resto del historial.
           final partidosFinalizados = snapshot.data!.docs.where((doc) {
             final datos = doc.data() as Map<String, dynamic>;
-            return datos['estado'] == 'finalizado';
+            return datos['estado'] == 'finalizado' && datos['fechaHora'] is Timestamp;
           }).toList();
 
           if (partidosFinalizados.isEmpty) {

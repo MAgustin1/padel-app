@@ -9,6 +9,15 @@ class RankingScreen extends StatefulWidget {
   State<RankingScreen> createState() => _RankingScreenState();
 }
 
+// 👇 Firestore no fuerza tipos: un campo numérico puede llegar como int o
+// double según cómo se haya escrito. Normalizamos siempre a int acá en vez
+// de castear directo, para que un solo documento con el tipo "raro" no
+// tire abajo el ranking para todos los usuarios.
+int _asInt(dynamic valor, [int porDefecto = 0]) {
+  if (valor is num) return valor.toInt();
+  return porDefecto;
+}
+
 class _RankingScreenState extends State<RankingScreen> {
   // Filtros
   String _filtroCategoria = 'Todas';
@@ -16,19 +25,23 @@ class _RankingScreenState extends State<RankingScreen> {
   
   final List<String> _categorias = ['Todas', '1ra', '2da', '3ra', '4ta', '5ta', '6ta', '7ma', '8va'];
   // Desactivamos el filtro de tiempo complejo hasta que la base de datos soporte historial por fechas
-  final List<String> _tiempos = ['Puntuación Global']; 
+  final List<String> _tiempos = ['Puntuación Global'];
+
+  // 👇 Creado UNA sola vez: tocar un chip de categoría hace un setState del
+  // widget, pero ya no recrea (ni resuscribe) el stream de Firestore.
+  late final Stream<QuerySnapshot> _streamUsuarios = FirebaseFirestore.instance.collection('users').snapshots();
 
   // --- FUNCIÓN PARA MOSTRAR EL POP-UP DE LA CARTA (Lógica Intacta) ---
   void _mostrarCartaJugador(BuildContext context, Map<String, dynamic> jugador) {
     final String categoriaStr = jugador['categoria']?.toString() ?? jugador['categoriaLugar']?.toString() ?? '8va';
     
     // Obtenemos las stats base de la DB, o usamos 50 por defecto
-    final int velDb = jugador['vel'] ?? 50;
-    final int remDb = jugador['rem'] ?? 50;
-    final int volDb = jugador['vol'] ?? 50;
-    final int defDb = jugador['def'] ?? 50;
-    final int conDb = jugador['con'] ?? 50;
-    final int fisDb = jugador['fis'] ?? 50;
+    final int velDb = _asInt(jugador['vel'], 50);
+    final int remDb = _asInt(jugador['rem'], 50);
+    final int volDb = _asInt(jugador['vol'], 50);
+    final int defDb = _asInt(jugador['def'], 50);
+    final int conDb = _asInt(jugador['con'], 50);
+    final int fisDb = _asInt(jugador['fis'], 50);
 
     int base = 50;
     String cat = categoriaStr.toLowerCase();
@@ -171,7 +184,7 @@ class _RankingScreenState extends State<RankingScreen> {
           // --- 3. LISTA DEL RANKING POR PUNTOS ---
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance.collection('users').snapshots(),
+              stream: _streamUsuarios,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator(color: Color(0xFFDFFF00)));
@@ -184,7 +197,7 @@ class _RankingScreenState extends State<RankingScreen> {
                 // 1. Mapeamos y aseguramos que tengan puntosTotales
                 List<Map<String, dynamic>> jugadores = snapshot.data!.docs.map((doc) {
                   final datos = doc.data() as Map<String, dynamic>;
-                  datos['puntos_ranking'] = datos['puntosTotales'] ?? 0; 
+                  datos['puntos_ranking'] = _asInt(datos['puntosTotales']);
                   return datos;
                 }).toList();
 

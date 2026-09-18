@@ -13,7 +13,7 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   int _viewIndex = 0;
-  
+
   // 👇 Variables para guardar tus datos personales en silencio
   Map<String, dynamic>? _misDatos;
   bool _cargandoMisDatos = true;
@@ -22,6 +22,23 @@ class _SearchScreenState extends State<SearchScreen> {
   // 👇 NUEVO: Filtros para el Tinder de Padel
   String _tinderFiltroPosicion = 'Todas';
   String _tinderFiltroNivel = 'Todos';
+
+  // 👇 Evita doble tap mientras se procesa un rechazo/paletazo
+  bool _procesandoInteraccion = false;
+
+  // 👇 Streams creados UNA sola vez (no en cada build()): tocar un filtro o
+  // cambiar de pestaña solo dispara un setState del widget, no una
+  // resuscripción + relectura completa de Firestore.
+  late final Stream<QuerySnapshot> _streamPartidosAbiertos = FirebaseFirestore.instance
+      .collection('partidos')
+      .where('estado', isEqualTo: 'abierto')
+      .where('esPublico', isEqualTo: true)
+      .snapshots();
+
+  // 👇 Cap duro de candidatos por costo: sin esto, el Tinder trae y sincroniza
+  // en vivo TODA la colección de usuarios en cada apertura de la pantalla.
+  late final Stream<QuerySnapshot> _streamUsuariosTinder =
+      FirebaseFirestore.instance.collection('users').limit(200).snapshots();
 
   @override
   void initState() {
@@ -96,17 +113,27 @@ class _SearchScreenState extends State<SearchScreen> {
 
   // --- LÓGICA DE RECHAZO (TINDER) ---
   Future<void> _rechazarJugador(String idOtroJugador) async {
+    if (_procesandoInteraccion) return;
+    setState(() => _procesandoInteraccion = true);
     try {
       await FirebaseFirestore.instance.collection('users').doc(miUid).set({
         'interactuados': FieldValue.arrayUnion([idOtroJugador])
       }, SetOptions(merge: true));
     } catch (e) {
       print("Error al rechazar: $e");
+    } finally {
+      if (mounted) setState(() => _procesandoInteraccion = false);
     }
   }
 
   // --- LÓGICA DE MATCH (TINDER DE PADEL) ---
+  // 👇 Guardado con _procesandoInteraccion: si el usuario toca "paletazo" dos
+  // veces seguidas antes de que el stream refleje el 'interactuados' recién
+  // escrito, evitamos disparar la escritura (y el .add() no-idempotente de
+  // 'paletazos') dos veces sobre la misma carta.
   Future<void> _darPaletazo(String idOtroJugador) async {
+    if (_procesandoInteraccion) return;
+    setState(() => _procesandoInteraccion = true);
     try {
       // 1. Lo anotamos como interactuado para que desaparezca del mazo
       await FirebaseFirestore.instance.collection('users').doc(miUid).set({
@@ -183,6 +210,8 @@ class _SearchScreenState extends State<SearchScreen> {
       }
     } catch (e) {
       print("Error al dar paletazo: $e");
+    } finally {
+      if (mounted) setState(() => _procesandoInteraccion = false);
     }
   }
 
@@ -289,11 +318,7 @@ class _SearchScreenState extends State<SearchScreen> {
   // =========================================
   Widget _buildMatchesListView() {
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('partidos')
-          .where('estado', isEqualTo: 'abierto')
-          .where('esPublico', isEqualTo: true)
-          .snapshots(),
+      stream: _streamPartidosAbiertos,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: Color(0xFFDFFF00)));
@@ -334,8 +359,8 @@ class _SearchScreenState extends State<SearchScreen> {
             final String horaStr = "${fecha.hour.toString().padLeft(2, '0')}:${fecha.minute.toString().padLeft(2, '0')}hs";
             final String diaStr = "${fecha.day}/${fecha.month}";
             
-            final int ocupados = (datos['jugadoresActuales'] as List).length;
-            final int lugaresDisponibles = datos['lugaresDisponibles'];
+            final int ocupados = (datos['jugadoresActuales'] as List?)?.length ?? 0;
+            final int lugaresDisponibles = (datos['lugaresDisponibles'] as num?)?.toInt() ?? 0;
             final List<bool> estadoJugadores = List.generate(4, (i) => i < ocupados);
 
             return Container(
@@ -519,7 +544,7 @@ class _SearchScreenState extends State<SearchScreen> {
         // 👇 LAS CARTAS 👇
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance.collection('users').snapshots(),
+            stream: _streamUsuariosTinder,
             builder: (context, snapshot) {
               
               if (snapshot.connectionState == ConnectionState.waiting) {
@@ -615,15 +640,15 @@ class _SearchScreenState extends State<SearchScreen> {
                           color: Colors.redAccent,
                           size: 65,
                           iconSize: 35,
-                          onTap: () => _rechazarJugador(idActual),
+                          onTap: _procesandoInteraccion ? null : () => _rechazarJugador(idActual),
                         ),
-                        const SizedBox(width: 40), 
+                        const SizedBox(width: 40),
                         _buildTinderButton(
-                          imagePath: 'assets/images/icono_paleta.png', 
-                          color: const Color(0xFFDFFF00),  
+                          imagePath: 'assets/images/icono_paleta.png',
+                          color: const Color(0xFFDFFF00),
                           size: 65,
-                          iconSize: 32, 
-                          onTap: () => _darPaletazo(idActual),
+                          iconSize: 32,
+                          onTap: _procesandoInteraccion ? null : () => _darPaletazo(idActual),
                         ),
                       ],
                     ),
@@ -660,36 +685,40 @@ class _SearchScreenState extends State<SearchScreen> {
 
   // --- BOTÓN ESTILO TINDER ---
   Widget _buildTinderButton({
-    IconData? icon, 
-    String? imagePath, 
-    required Color color, 
-    required double size, 
+    IconData? icon,
+    String? imagePath,
+    required Color color,
+    required double size,
     required double iconSize,
-    required VoidCallback onTap
+    VoidCallback? onTap
   }) {
+    final bool deshabilitado = onTap == null;
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E293B),
-          shape: BoxShape.circle,
-          border: Border.all(color: color.withOpacity(0.3)),
-          boxShadow: [
-            BoxShadow(color: color.withOpacity(0.1), blurRadius: 15, spreadRadius: 2, offset: const Offset(0, 5))
-          ],
+      child: Opacity(
+        opacity: deshabilitado ? 0.4 : 1.0,
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            shape: BoxShape.circle,
+            border: Border.all(color: color.withOpacity(0.3)),
+            boxShadow: [
+              BoxShadow(color: color.withOpacity(0.1), blurRadius: 15, spreadRadius: 2, offset: const Offset(0, 5))
+            ],
+          ),
+          child: imagePath != null
+              ? Center(
+                  child: Image.asset(
+                    imagePath,
+                    width: iconSize,
+                    height: iconSize,
+                    color: color,
+                  ),
+                )
+              : Icon(icon, color: color, size: iconSize),
         ),
-        child: imagePath != null 
-            ? Center(
-                child: Image.asset(
-                  imagePath, 
-                  width: iconSize, 
-                  height: iconSize, 
-                  color: color, 
-                ),
-              )
-            : Icon(icon, color: color, size: iconSize),
       ),
     );
   }

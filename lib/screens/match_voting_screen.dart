@@ -39,28 +39,67 @@ class _MatchVotingScreenState extends State<MatchVotingScreen> {
   @override
   void initState() {
     super.initState();
-    _prepararCartasArcade();
+    _chequearSiYaVoteYPrepararCartas();
+  }
+
+  // 👇 Chequeo server-side de "ya voté" ANTES de armar las cartas: si el
+  // usuario reentra a esta pantalla (volvió atrás, la reabrió) después de
+  // haber votado, lo mandamos de vuelta sin dejarlo votar dos veces.
+  Future<void> _chequearSiYaVoteYPrepararCartas() async {
+    try {
+      final snap = await FirebaseFirestore.instance.collection('partidos').doc(widget.matchId).get();
+      final List votaron = snap.data()?['votaron'] as List? ?? [];
+      if (votaron.contains(miUid)) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ya calificaste a los jugadores de este partido.'), backgroundColor: Colors.orangeAccent),
+        );
+        Navigator.pop(context);
+        return;
+      }
+    } catch (e) {
+      // Si falla el chequeo, seguimos: la transacción al guardar los votos
+      // igual va a bloquear un segundo envío.
+    }
+    await _prepararCartasArcade();
   }
 
   Future<void> _prepararCartasArcade() async {
     final List<Map<String, dynamic>> temporales = [];
     final random = math.Random();
 
-    for (String uid in widget.jugadoresActuales) {
-      if (uid != miUid) {
-        try {
-          final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
-          if (doc.exists) {
-            temporales.add({'uid': uid, ...doc.data()!});
-            
+    final List<String> otrosUids = widget.jugadoresActuales
+        .cast<String>()
+        .where((uid) => uid != miUid)
+        .toList();
+
+    // 👇 Un solo query con whereIn en vez de un get() por rival (N+1). El
+    // partido tiene a lo sumo 4 jugadores, así que nunca se acerca al límite
+    // de 30 valores de whereIn.
+    if (otrosUids.isNotEmpty) {
+      try {
+        final query = await FirebaseFirestore.instance
+            .collection('users')
+            .where(FieldPath.documentId, whereIn: otrosUids)
+            .get();
+
+        final Map<String, Map<String, dynamic>> datosPorUid = {
+          for (final doc in query.docs) doc.id: doc.data(),
+        };
+
+        for (final uid in otrosUids) {
+          final datos = datosPorUid[uid];
+          if (datos != null) {
+            temporales.add({'uid': uid, ...datos});
+
             // Ruleta: Elegimos un stat al azar de los 6 para este jugador
             String statAleatorio = _listaStats[random.nextInt(_listaStats.length)];
             _statAsignadoPorJugador[uid] = statAleatorio;
             _votosElegidos[uid] = 0; // Por defecto arranca en "=" (0)
           }
-        } catch (e) {
-          print("Error cargando jugador para arcade: $e");
         }
+      } catch (e) {
+        print("Error cargando jugadores para arcade: $e");
       }
     }
 
@@ -70,22 +109,36 @@ class _MatchVotingScreenState extends State<MatchVotingScreen> {
     });
   }
 
+  // 👇 Cacheado: sin esto, _calcularPesoDelVoto dispara esta misma query
+  // (todo mi historial de partidos finalizados) una vez POR CADA jugador que
+  // calificás (hasta 3 veces por sesión de voto). La pedimos una sola vez y
+  // la reusamos para los 3.
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>? _misPartidosFinalizadosFuture;
+
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _obtenerMisPartidosFinalizados() {
+    _misPartidosFinalizadosFuture ??= FirebaseFirestore.instance
+        .collection('partidos')
+        .where('estado', isEqualTo: 'finalizado')
+        .where('jugadoresActuales', arrayContains: miUid)
+        .get()
+        .then((snap) => snap.docs);
+    return _misPartidosFinalizadosFuture!;
+  }
+
   // 👇 SISTEMA ANTI-ADULTERACIÓN (Rendimientos Decrecientes) 👇
   Future<double> _calcularPesoDelVoto(String uidDestino) async {
     final sieteDiasAtras = DateTime.now().subtract(const Duration(days: 7));
     int partidosJuntosEstaSemana = 0;
 
     try {
-      final query = await FirebaseFirestore.instance
-          .collection('partidos')
-          .where('estado', isEqualTo: 'finalizado')
-          .where('jugadoresActuales', arrayContains: miUid)
-          .get();
+      final docs = await _obtenerMisPartidosFinalizados();
 
-      for (var doc in query.docs) {
+      for (var doc in docs) {
         final pData = doc.data();
         final List jugadores = pData['jugadoresActuales'] ?? [];
-        final DateTime fechaPartido = (pData['fechaHora'] as Timestamp).toDate();
+        final fechaRaw = pData['fechaHora'];
+        if (fechaRaw is! Timestamp) continue;
+        final DateTime fechaPartido = fechaRaw.toDate();
 
         if (jugadores.contains(uidDestino) && fechaPartido.isAfter(sieteDiasAtras)) {
           partidosJuntosEstaSemana++;
@@ -105,7 +158,7 @@ class _MatchVotingScreenState extends State<MatchVotingScreen> {
   Future<void> _procesarYEnviarVotos() async {
     setState(() => _estaGuardando = true);
     try {
-      final batch = FirebaseFirestore.instance.batch();
+      final Map<String, Map<String, dynamic>> actualizacionesPorJugador = {};
 
       for (var jugador in _otrosJugadores) {
         final String uidDestino = jugador['uid'];
@@ -145,8 +198,6 @@ class _MatchVotingScreenState extends State<MatchVotingScreen> {
         int nuevaMediaGeneral = (sumaTotalStats / 6).round().clamp(1, 99);
 
         // 5. Preparamos la actualización para Firebase
-        final docRef = FirebaseFirestore.instance.collection('users').doc(uidDestino);
-        
         Map<String, dynamic> datosAActualizar = {
           'cantidadVotosStats': cantidadVotos + 1,
           'media': nuevaMediaGeneral, // Tu variable original de media
@@ -154,22 +205,41 @@ class _MatchVotingScreenState extends State<MatchVotingScreen> {
         datosAActualizar.addAll(nuevosAcumulados);
         datosAActualizar.addAll(nuevosPromedios);
 
-        batch.update(docRef, datosAActualizar);
+        actualizacionesPorJugador[uidDestino] = datosAActualizar;
       }
 
-      // Dejamos asentado que ya voté
-      batch.update(FirebaseFirestore.instance.collection('partidos').doc(widget.matchId), {
-        'votaron': FieldValue.arrayUnion([miUid])
+      final partidoRef = FirebaseFirestore.instance.collection('partidos').doc(widget.matchId);
+
+      // 👇 Todo el guardado va en una transacción que relee 'votaron' justo
+      // antes de escribir: si el usuario ya había votado (reentró a esta
+      // pantalla, doble submit), se aborta sin aplicar los votos de nuevo.
+      final bool yaHabiaVotado = await FirebaseFirestore.instance.runTransaction<bool>((transaction) async {
+        final snap = await transaction.get(partidoRef);
+        final List votaron = snap.data()?['votaron'] as List? ?? [];
+        if (votaron.contains(miUid)) {
+          return true;
+        }
+
+        actualizacionesPorJugador.forEach((uidDestino, datosAActualizar) {
+          transaction.update(FirebaseFirestore.instance.collection('users').doc(uidDestino), datosAActualizar);
+        });
+
+        transaction.update(partidoRef, {'votaron': FieldValue.arrayUnion([miUid])});
+        return false;
       });
 
-      await batch.commit();
-
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('¡Votación completada! Cartas actualizadas con éxito.'), backgroundColor: Colors.green));
+
+      if (yaHabiaVotado) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ya habías calificado a estos jugadores.'), backgroundColor: Colors.orangeAccent));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('¡Votación completada! Cartas actualizadas con éxito.'), backgroundColor: Colors.green));
+      }
       Navigator.popUntil(context, (route) => route.isFirst);
 
     } catch (e) {
-      print("Error en guardado Arcade: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No pudimos guardar tu votación: $e'), backgroundColor: Colors.redAccent));
       setState(() => _estaGuardando = false);
     }
   }

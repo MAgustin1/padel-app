@@ -1,7 +1,52 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'chat_screen.dart'; 
+import 'chat_screen.dart';
+
+// 👇 Firestore corta 'whereIn' en 30 valores: si el usuario tiene más de 30
+// amigos, la query directa fallaría entera y la lista de amigos desaparecería
+// sin aviso. Partimos los IDs en tandas de 30 y combinamos los resultados en
+// vivo de cada tanda en un solo stream.
+Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _streamAmigosEnTandas(List<String> amigosIds) {
+  const int tamanioTanda = 30;
+  final List<List<String>> tandas = [];
+  for (int i = 0; i < amigosIds.length; i += tamanioTanda) {
+    tandas.add(amigosIds.sublist(i, i + tamanioTanda > amigosIds.length ? amigosIds.length : i + tamanioTanda));
+  }
+
+  late final StreamController<List<QueryDocumentSnapshot<Map<String, dynamic>>>> controller;
+  final resultadosPorTanda = List<List<QueryDocumentSnapshot<Map<String, dynamic>>>>.filled(tandas.length, const []);
+  final List<StreamSubscription> subs = [];
+
+  void emitirCombinado() {
+    controller.add(resultadosPorTanda.expand((lista) => lista).toList());
+  }
+
+  controller = StreamController<List<QueryDocumentSnapshot<Map<String, dynamic>>>>.broadcast(
+    onListen: () {
+      for (int i = 0; i < tandas.length; i++) {
+        subs.add(
+          FirebaseFirestore.instance
+              .collection('users')
+              .where(FieldPath.documentId, whereIn: tandas[i])
+              .snapshots()
+              .listen((snap) {
+            resultadosPorTanda[i] = snap.docs;
+            emitirCombinado();
+          }),
+        );
+      }
+    },
+    onCancel: () {
+      for (final s in subs) {
+        s.cancel();
+      }
+    },
+  );
+
+  return controller.stream;
+}
 
 class InboxScreen extends StatefulWidget {
   const InboxScreen({super.key});
@@ -72,64 +117,31 @@ class _InboxScreenState extends State<InboxScreen> {
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey[400], fontSize: 14),
                     ),
-                    const SizedBox(height: 40),
-                    
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blueAccent,
-                        foregroundColor: Colors.white,
-                      ),
-                      icon: const Icon(Icons.bug_report),
-                      label: const Text('FORZAR MATCH DE PRUEBA'),
-                      onPressed: () async {
-                        try {
-                          await FirebaseFirestore.instance.collection('users').doc('AMIGO_PRUEBA').set({
-                            'nombre': 'LA BESTIA',
-                            'categoriaLugar': '3RA / DRIVE',
-                            'media': 88,
-                            'avatarUrl': 'https://api.dicebear.com/9.x/micah/png?seed=LaBestia&backgroundColor=transparent'
-                          });
-
-                          await FirebaseFirestore.instance.collection('users').doc(miUid).update({
-                            'amigos': FieldValue.arrayUnion(['AMIGO_PRUEBA'])
-                          });
-
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('¡Amigo inyectado con éxito!'), backgroundColor: Colors.green)
-                          );
-                        } catch (e) {
-                          print("Error inyectando: $e");
-                        }
-                      },
-                    ),
                   ],
                 ),
               ),
             );
           }
 
-          return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('users')
-                .where(FieldPath.documentId, whereIn: amigosIds)
-                .snapshots(),
+          return StreamBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+            stream: _streamAmigosEnTandas(amigosIds.cast<String>()),
             builder: (context, amigosSnapshot) {
               if (amigosSnapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator(color: Colors.blueAccent));
               }
 
-              if (!amigosSnapshot.hasData || amigosSnapshot.data!.docs.isEmpty) {
+              if (!amigosSnapshot.hasData || amigosSnapshot.data!.isEmpty) {
                 return const Center(child: Text('No se pudo encontrar la info de tus amigos.', style: TextStyle(color: Colors.grey)));
               }
 
-              final listaAmigos = amigosSnapshot.data!.docs;
+              final listaAmigos = amigosSnapshot.data!;
 
               return ListView.builder(
                 padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
                 itemCount: listaAmigos.length,
                 itemBuilder: (context, index) {
                   final amigo = listaAmigos[index];
-                  final datosAmigo = amigo.data() as Map<String, dynamic>;
+                  final datosAmigo = amigo.data();
                   
                   final String nombre = datosAmigo['nombre'] ?? 'Jugador';
                   final String avatarUrl = datosAmigo['avatarUrl'] ?? 'https://api.dicebear.com/9.x/micah/png';

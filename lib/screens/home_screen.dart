@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart'; 
-import 'search_screen.dart'; 
+import 'search_screen.dart';
 import 'create_match_screen.dart';
 import 'user_profile_tab_screen.dart';
 import 'inbox_screen.dart'; 

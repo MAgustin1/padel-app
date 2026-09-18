@@ -4,8 +4,16 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'questionnaire_screen.dart';
 
+// 👇 Las 3 fuentes posibles para la foto de la carta
+enum _FuenteAvatar { google, subida, generico }
+
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({super.key});
+  // Sugerencias que llegan de Google (pueden venir null, ej: login con Apple
+  // a futuro, o cuenta de Google sin foto). Siempre editables por el usuario.
+  final String? prefillNombre;
+  final String? prefillFotoUrl;
+
+  const ProfileScreen({super.key, this.prefillNombre, this.prefillFotoUrl});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -21,9 +29,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
   DateTime? _fechaNacimiento;
   String? _posicionSeleccionada;
   String? _generoSeleccionado; // 👇 Nueva variable para el Género
-  
-  Uint8List? _imagenBytes; 
+
+  Uint8List? _imagenBytes;
   final ImagePicker _picker = ImagePicker();
+
+  // 👇 Selector de foto: Google / subida propia / avatar genérico
+  late _FuenteAvatar _fuenteAvatar;
+
+  @override
+  void initState() {
+    super.initState();
+    // Precarga editable: si Google nos dio nombre, lo ponemos pero el
+    // usuario lo puede borrar y escribir el suyo sin ningún problema.
+    if (widget.prefillNombre != null && widget.prefillNombre!.isNotEmpty) {
+      _nombreController.text = widget.prefillNombre!;
+    }
+    // Si Google nos dio foto, arrancamos con esa opción marcada;
+    // si no, arrancamos en avatar genérico.
+    _fuenteAvatar = (widget.prefillFotoUrl != null && widget.prefillFotoUrl!.isNotEmpty)
+        ? _FuenteAvatar.google
+        : _FuenteAvatar.generico;
+  }
+
+  // Semilla estable para el avatar genérico (dicebear), igual criterio
+  // que ya se usa en el resto de la app (apodo, o nombre si no hay apodo).
+  String get _urlAvatarGenerico {
+    final semilla = (_apodoController.text.trim().isNotEmpty
+            ? _apodoController.text.trim()
+            : _nombreController.text.trim())
+        .replaceAll(' ', '');
+    final seedFinal = semilla.isEmpty ? 'jugador' : semilla;
+    return 'https://api.dicebear.com/9.x/micah/png?seed=$seedFinal&backgroundColor=transparent';
+  }
 
   final List<String> _categorias = ['1ra', '2da', '3ra', '4ta', '5ta', '6ta', '7ma', '8va', 'Inicial'];
   final List<String> _posiciones = ['Drive', 'Revés', 'Ambos'];
@@ -36,6 +73,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final bytes = await fotoElegida.readAsBytes();
       setState(() {
         _imagenBytes = bytes;
+        _fuenteAvatar = _FuenteAvatar.subida;
       });
     }
   }
@@ -66,6 +104,47 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _fechaNacimiento = fechaElegida;
       });
     }
+  }
+
+  // Devuelve la imagen a mostrar en el círculo según la fuente activa
+  ImageProvider? _fotoParaMostrar() {
+    switch (_fuenteAvatar) {
+      case _FuenteAvatar.google:
+        return (widget.prefillFotoUrl != null && widget.prefillFotoUrl!.isNotEmpty)
+            ? NetworkImage(widget.prefillFotoUrl!)
+            : null;
+      case _FuenteAvatar.subida:
+        return _imagenBytes != null ? MemoryImage(_imagenBytes!) : null;
+      case _FuenteAvatar.generico:
+        return NetworkImage(_urlAvatarGenerico);
+    }
+  }
+
+  // 👇 Cada chip define su propio onTap: los de Google/genérico cambian la
+  // fuente al toque; 'Subir foto' abre el picker directo (ver _seleccionarFoto),
+  // que recién cambia la fuente a "subida" si el usuario elige una imagen. Así
+  // nunca queda la fuente en "subida" sin foto real detrás.
+  Widget _chipFuente(String label, _FuenteAvatar fuente, {required VoidCallback onTap}) {
+    final bool activo = _fuenteAvatar == fuente;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: activo ? const Color(0xFFDFFF00) : const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: activo ? const Color(0xFFDFFF00) : Colors.white24),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            color: activo ? Colors.black : Colors.white70,
+          ),
+        ),
+      ),
+    );
   }
 
   // 👇 HELPER PARA DISEÑAR LOS INPUTS TODOS IGUALES Y PREMIUM 👇
@@ -108,37 +187,73 @@ class _ProfileScreenState extends State<ProfileScreen> {
             children: [
               
               // --- CÍRCULO DE FOTO CON GLOW NEÓN ---
+              // 👇 Tocar la foto SIEMPRE abre el picker (sea cual sea la fuente
+              // activa); el badge de cámara es solo la pista visual de eso.
               Center(
                 child: GestureDetector(
                   onTap: _seleccionarFoto,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: _imagenBytes != null ? const Color(0xFFDFFF00).withOpacity(0.3) : Colors.black26,
-                          blurRadius: 30,
-                          spreadRadius: 2,
-                        )
-                      ]
-                    ),
-                    child: CircleAvatar(
-                      radius: 65,
-                      backgroundColor: const Color(0xFF1E293B), 
-                      backgroundImage: _imagenBytes != null ? MemoryImage(_imagenBytes!) : null,
-                      child: _imagenBytes == null
-                          ? const Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.add_a_photo, size: 40, color: Color(0xFFDFFF00)),
-                                SizedBox(height: 4),
-                                Text('Tu Foto', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))
-                              ],
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFFDFFF00).withOpacity(0.25),
+                              blurRadius: 30,
+                              spreadRadius: 2,
                             )
-                          : null,
-                    ),
+                          ]
+                        ),
+                        child: CircleAvatar(
+                          radius: 65,
+                          backgroundColor: const Color(0xFF1E293B),
+                          backgroundImage: _fotoParaMostrar(),
+                          child: _fotoParaMostrar() == null
+                              ? const Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.add_a_photo, size: 40, color: Color(0xFFDFFF00)),
+                                    SizedBox(height: 4),
+                                    Text('Tu Foto', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))
+                                  ],
+                                )
+                              : null,
+                        ),
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        right: 4,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFDFFF00),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: const Color(0xFF0F172A), width: 2),
+                          ),
+                          child: const Icon(Icons.camera_alt, size: 16, color: Colors.black),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
+              ),
+              const SizedBox(height: 16),
+
+              // --- SELECTOR DE FUENTE DE AVATAR ---
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (widget.prefillFotoUrl != null && widget.prefillFotoUrl!.isNotEmpty)
+                    _chipFuente('Foto de Google', _FuenteAvatar.google,
+                        onTap: () => setState(() => _fuenteAvatar = _FuenteAvatar.google)),
+                  _chipFuente('Subir foto', _FuenteAvatar.subida, onTap: _seleccionarFoto),
+                  _chipFuente('Avatar genérico', _FuenteAvatar.generico,
+                      onTap: () => setState(() => _fuenteAvatar = _FuenteAvatar.generico)),
+                ],
               ),
               const SizedBox(height: 30),
 
@@ -231,6 +346,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       return;
                     }
                     
+                    // 👇 Según la fuente elegida, mandamos bytes (para subir a
+                    // Storage) o directamente una URL ya lista (Google o
+                    // avatar genérico), para no subir de más innecesariamente.
+                    final bool usaUrlDirecta = _fuenteAvatar != _FuenteAvatar.subida;
+
                     Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -242,7 +362,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           genero: _generoSeleccionado!,       // Pasamos el género
                           posicion: _posicionSeleccionada!,   // Pasamos la posición
                           categoria: _categoriaSeleccionada!,
-                          imagenBytes: _imagenBytes, 
+                          imagenBytes: usaUrlDirecta ? null : _imagenBytes,
+                          avatarUrlDirecta: usaUrlDirecta
+                              ? (_fuenteAvatar == _FuenteAvatar.google
+                                  ? widget.prefillFotoUrl
+                                  : _urlAvatarGenerico)
+                              : null,
                         ),
                       ),
                     );

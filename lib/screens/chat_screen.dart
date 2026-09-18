@@ -35,30 +35,49 @@ class _ChatScreenState extends State<ChatScreen> {
     return uids.join('_'); // Ej: "abc_xyz"
   }
 
-  void _enviarMensaje() async {
+  @override
+  void dispose() {
+    _mensajeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _enviarMensaje() async {
     final texto = _mensajeController.text.trim();
     if (texto.isEmpty) return;
 
     _mensajeController.clear(); // Limpiamos la caja de texto rápido
 
-    // Guardamos el mensaje en la subcolección 'mensajes' de este chat
-    await FirebaseFirestore.instance
-        .collection('chats')
-        .doc(_chatId)
-        .collection('mensajes')
-        .add({
-      'texto': texto,
-      'enviadoPor': miUid,
-      'tipo': 'texto', // Agregamos el tipo texto por defecto
-      'fecha': FieldValue.serverTimestamp(),
-    });
-    
-    // Actualizamos el "último mensaje" en el documento principal del chat
-    await FirebaseFirestore.instance.collection('chats').doc(_chatId).set({
-      'ultimoMensaje': texto,
-      'fechaUltimo': FieldValue.serverTimestamp(),
-      'participantes': [miUid, widget.idOtroJugador],
-    }, SetOptions(merge: true));
+    try {
+      final mensajeRef = FirebaseFirestore.instance
+          .collection('chats')
+          .doc(_chatId)
+          .collection('mensajes')
+          .doc();
+      final chatRef = FirebaseFirestore.instance.collection('chats').doc(_chatId);
+
+      // Batch: el mensaje y el "último mensaje" del chat se escriben juntos,
+      // para que el inbox nunca quede desactualizado si una de las dos falla.
+      final batch = FirebaseFirestore.instance.batch();
+      batch.set(mensajeRef, {
+        'texto': texto,
+        'enviadoPor': miUid,
+        'tipo': 'texto',
+        'fecha': FieldValue.serverTimestamp(),
+      });
+      batch.set(chatRef, {
+        'ultimoMensaje': texto,
+        'fechaUltimo': FieldValue.serverTimestamp(),
+        'participantes': [miUid, widget.idOtroJugador],
+      }, SetOptions(merge: true));
+
+      await batch.commit();
+    } catch (e) {
+      if (!mounted) return;
+      _mensajeController.text = texto; // No lo dejamos perderse: lo devolvemos al input
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo enviar el mensaje: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
   }
 
   // --- 1. MENÚ DE INVITACIÓN A PARTIDOS ---
@@ -168,14 +187,18 @@ class _ChatScreenState extends State<ChatScreen> {
     final textoInvitacion = '¡Che, sumate a mi partido! Jugamos en $club el $dia a las $hora. 🎾';
 
     try {
-      await FirebaseFirestore.instance
+      final mensajeRef = FirebaseFirestore.instance
           .collection('chats')
           .doc(_chatId)
           .collection('mensajes')
-          .add({
+          .doc();
+      final chatRef = FirebaseFirestore.instance.collection('chats').doc(_chatId);
+
+      final batch = FirebaseFirestore.instance.batch();
+      batch.set(mensajeRef, {
         'texto': textoInvitacion,
         'enviadoPor': miUid,
-        'tipo': 'invitacion', 
+        'tipo': 'invitacion',
         'partidoId': idPartido,
         // 👇 Guardamos estos datos extra para dibujar la tarjeta fácil
         'club': club,
@@ -183,15 +206,18 @@ class _ChatScreenState extends State<ChatScreen> {
         'hora': hora,
         'fecha': FieldValue.serverTimestamp(),
       });
-
-      await FirebaseFirestore.instance.collection('chats').doc(_chatId).set({
+      batch.set(chatRef, {
         'ultimoMensaje': '🎾 Invitación a partido',
         'fechaUltimo': FieldValue.serverTimestamp(),
         'participantes': [miUid, widget.idOtroJugador],
       }, SetOptions(merge: true));
 
+      await batch.commit();
     } catch (e) {
-      print("Error mandando invitación: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo enviar la invitación: $e'), backgroundColor: Colors.redAccent),
+      );
     }
   }
 
@@ -221,11 +247,16 @@ class _ChatScreenState extends State<ChatScreen> {
           // --- ZONA DE BURBUJAS DE CHAT ---
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
+              // 👇 Tope a los últimos 50 mensajes: sin esto, cada apertura del
+              // chat descarga y mantiene en memoria el historial completo de
+              // la conversación. Paginación real ("cargar más" al scrollear
+              // hacia arriba) queda pendiente como mejora futura.
               stream: FirebaseFirestore.instance
                   .collection('chats')
                   .doc(_chatId)
                   .collection('mensajes')
                   .orderBy('fecha', descending: true)
+                  .limit(50)
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {

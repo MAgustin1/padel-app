@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../services/auth_service.dart';
 import 'profile_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -19,11 +21,30 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _iniciarConGoogle() async {
     setState(() => _isLoading = true);
 
-    final userCredential = await _authService.loginConGoogle();
+    UserCredential? userCredential;
+    try {
+      userCredential = await _authService.loginConGoogle();
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No pudimos iniciar sesión con Google: $e', style: const TextStyle(color: Colors.white)),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
 
     if (userCredential != null) {
       // 1. Agarramos el ID del usuario que acaba de entrar
       final String uid = userCredential.user!.uid;
+
+      // 👇 Datos que Google nos da gratis: nombre y foto de perfil.
+      // Los mandamos al ProfileScreen SOLO como sugerencia precargada;
+      // el usuario puede cambiarlos en el paso siguiente.
+      final String? nombreGoogle = userCredential.user!.displayName;
+      final String? fotoGoogle = userCredential.user!.photoURL;
 
       // 2. Hacemos una consulta rápida a Firestore para ver si ya tiene perfil creado
       final DocumentSnapshot docSnap = await FirebaseFirestore.instance
@@ -45,7 +66,12 @@ class _LoginScreenState extends State<LoginScreen> {
         // Si el documento NO existe, es la primera vez y va a registrarse
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (context) => const ProfileScreen()),
+          MaterialPageRoute(
+            builder: (context) => ProfileScreen(
+              prefillNombre: nombreGoogle,
+              prefillFotoUrl: fotoGoogle,
+            ),
+          ),
         );
       }
     } else {
@@ -53,22 +79,18 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('El inicio de sesión fue cancelado o falló.', style: TextStyle(color: Colors.white)),
+          content: Text('Inicio de sesión cancelado.', style: TextStyle(color: Colors.white)),
           backgroundColor: Colors.redAccent,
         ),
       );
     }
   }
 
-  // Función para el botón de Apple (Visual por ahora)
-  Future<void> _iniciarConApple() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Login con Apple próximamente 🍏', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-        backgroundColor: Color(0xFFDFFF00),
-      ),
-    );
-  }
+  // 👇 Botón de Apple OCULTO a propósito: Apple exige Sign in with Apple
+  // funcionando de verdad para poder mostrar login social en iOS (requisito
+  // de revisión de la App Store). Lo reactivamos cuando auth_service.dart
+  // tenga loginConApple() implementado con los certificados reales.
+  // Future<void> _iniciarConApple() async { ... }
 
   @override
   Widget build(BuildContext context) {
@@ -130,10 +152,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 // Botón de Google (Dark Glassmorphism)
                 ElevatedButton.icon(
                   onPressed: _iniciarConGoogle,
-                  icon: Image.network(
-                    'https://img.icons8.com/color/48/000000/google-logo.png',
-                    height: 24,
-                  ),
+                  icon: const FaIcon(FontAwesomeIcons.google, color: Colors.white, size: 20),
                   label: const Text(
                     'Continuar con Google',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
@@ -148,26 +167,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
-
-                // Botón de Apple (Negro Puro)
-                ElevatedButton.icon(
-                  onPressed: _iniciarConApple,
-                  icon: const Icon(Icons.apple, color: Colors.white, size: 28),
-                  label: const Text(
-                    'Continuar con Apple',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF0A0A0A), // Negro
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
-                      side: BorderSide(color: Colors.white.withOpacity(0.1)),
-                    ),
-                  ),
-                ),
+                // 👇 Botón de Apple oculto hasta que loginConApple() esté
+                // implementado de verdad (ver auth_service.dart). Cuando esté
+                // listo, el botón vuelve a este mismo lugar.
               ],
             ],
           ),

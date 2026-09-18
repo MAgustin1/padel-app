@@ -66,7 +66,15 @@ class _UserProfileTabScreenState extends State<UserProfileTabScreen> {
     else if (cat.contains('6ta')) base = 67;
     else if (cat.contains('7ma')) base = 60;
 
-    int valorCrudo = (datos['estadisticas']?[stat] ?? 50);
+    // 👇 BUG REAL: leía de 'estadisticas', una clave que nunca se escribe en
+    // ningún lado. Las stats reales que actualiza la votación arcade
+    // (match_voting_screen.dart) viven en el nivel raíz del doc, en
+    // minúscula ('vel', 'rem', ...), igual que las lee ranking_screen.dart y
+    // home_screen.dart. Por eso "Mi Perfil" siempre mostraba el mismo valor
+    // base de categoría, sin reflejar nunca los votos de tus compañeros.
+    // Normalizamos a int por si el campo llegó como double desde Firestore.
+    final dynamic crudo = datos[stat.toLowerCase()];
+    final int valorCrudo = crudo is num ? crudo.toInt() : 50;
     int finalStat = base + (valorCrudo * 0.12).round();
     return finalStat > 99 ? 99 : finalStat;
   }
