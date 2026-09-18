@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "688387397041",
+    "project_id": "padel-app-social",
+    "storage_bucket": "padel-app-social.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:688387397041:android:ae0f70ddfee73a24ba1990",
+        "android_client_info": {
+          "package_name": "com.example.padel_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "688387397041-hg2nft9k9do77mki9s4gvj7e4mvl9p7p.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.padel_app",
+            "certificate_hash": "d2edfa5d70ef5c1a166df8831bf8ee17b4d94d85"
+          }
+        },
+        {
+          "client_id": "688387397041-0l5mas6l20vl3h8qbiu2hdpcng6asirh.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCLnXbAsu3cNSCJ1ULJ_aSNbgyPt6Bi8UI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "688387397041-0l5mas6l20vl3h8qbiu2hdpcng6asirh.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "688387397041-7feb8j7o6ifnft3b3e92ob0nr67n6not.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.padelApp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
